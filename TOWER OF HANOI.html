@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tower of Hanoi</title>
+<style>
+  :root {
+    --bg: #12303a;
+    --board: #0c222a;
+    --peg: #d8c8a0;
+    --text: #f1ede2;
+    --muted: #9fb8bd;
+    --accent: #f2b33d;
+    --danger: #e8715a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    background: var(--bg); color: var(--text);
+    font-family: Georgia, "Times New Roman", serif;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 24px 16px;
+  }
+  h1 { margin: 0 0 4px; font-size: 2rem; letter-spacing: .02em; }
+  p.sub { margin: 0 0 20px; color: var(--muted); }
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    justify-content: center; margin-bottom: 18px;
+  }
+  .bar label, .stat { font-size: .95rem; color: var(--muted); }
+  .stat b { color: var(--text); font-size: 1.1rem; }
+  select, button {
+    font: inherit; font-size: .95rem; color: var(--text);
+    background: var(--board); border: 1px solid #2f5762;
+    border-radius: 8px; padding: 8px 14px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .board {
+    width: min(900px, 100%);
+    background: var(--board);
+    border-radius: 14px;
+    padding: 20px 10px 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  }
+  .tower {
+    position: relative; height: 340px;
+    display: flex; flex-direction: column-reverse; align-items: center;
+    padding-bottom: 14px; border-radius: 10px;
+    background: transparent; border: 2px solid transparent;
+    cursor: pointer; color: inherit;
+  }
+  .tower:hover { background: rgba(255,255,255,.03); }
+  .tower.selected { border-color: var(--accent); background: rgba(242,179,61,.07); }
+  .tower.bad { animation: shake .3s; border-color: var(--danger); }
+  .tower::before { /* peg */
+    content: ""; position: absolute; bottom: 14px; left: 50%;
+    width: 12px; height: 88%; transform: translateX(-50%);
+    background: var(--peg); border-radius: 6px 6px 0 0;
+  }
+  .tower::after { /* base */
+    content: ""; position: absolute; bottom: 0; left: 6%; right: 6%;
+    height: 14px; background: var(--peg); border-radius: 7px;
+  }
+  .disk {
+    position: relative; z-index: 1; height: 26px; margin-top: 2px;
+    border-radius: 13px; box-shadow: inset 0 -4px 0 rgba(0,0,0,.18);
+    transition: transform .15s;
+  }
+  .disk.lifted { transform: translateY(-14px); box-shadow: 0 6px 12px rgba(0,0,0,.4), inset 0 -4px 0 rgba(0,0,0,.18); }
+  .label { position: absolute; bottom: -26px; color: var(--muted); font-size: .85rem; }
+  .board-wrap { width: min(900px, 100%); }
+  .msg { min-height: 2.2em; margin-top: 18px; text-align: center; color: var(--muted); }
+  .msg.win { color: var(--accent); font-size: 1.2rem; }
+  @keyframes shake {
+    25% { transform: translateX(-6px); } 75% { transform: translateX(6px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tower.bad { animation: none; } .disk { transition: none; }
+  }
+  @media (max-width: 560px) { .tower { height: 280px; } .disk { height: 22px; } }
+</style>
+</head>
+<body>
+  <h1>Tower of Hanoi</h1>
+  <p class="sub">Move the whole stack to the last peg. A bigger disk never goes on a smaller one.</p>
+
+  <div class="bar">
+    <label>Disks
+      <select id="diskCount">
+        <option>3</option><option>4</option><option>5</option>
+        <option>6</option><option>7</option><option>8</option>
+      </select>
+    </label>
+    <span class="stat">Moves: <b id="moves">0</b></span>
+    <span class="stat">Minimum: <b id="min">7</b></span>
+    <button id="undo" disabled>Undo</button>
+    <button id="reset">Restart</button>
+    <button id="solve">Auto-solve</button>
+    <button id="mute" aria-pressed="false">Sound: On</button>
+  </div>
+
+  <div class="board-wrap">
+    <div class="board" id="board"></div>
+  </div>
+  <div class="msg" id="msg" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const COLORS = ["#e8715a","#f2b33d","#8fd16b","#4fc3b5","#5aa0e8","#a27be8","#e87bb6","#c9c9c9"];
+  const boardEl = document.getElementById("board");
+  const movesEl = document.getElementById("moves");
+  const minEl = document.getElementById("min");
+  const msgEl = document.getElementById("msg");
+  const undoBtn = document.getElementById("undo");
+  const solveBtn = document.getElementById("solve");
+  const countEl = document.getElementById("diskCount");
+
+  let n, pegs, selected, moves, history, solving, timer;
+
+  // ---------- Sound (Web Audio API, no files needed) ----------
+  let audioCtx = null, soundOn = true;
+  const muteBtn = document.getElementById("mute");
+
+  function tone(freq, start, dur, type = "sine", vol = 0.15) {
+    if (!soundOn) return;
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const t0 = audioCtx.currentTime + start;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+  const sfx = {
+    lift()  { tone(520, 0, 0.09, "triangle"); },
+    drop()  { tone(260, 0, 0.12, "triangle"); tone(190, 0.05, 0.12, "sine"); },
+    error() { tone(150, 0, 0.18, "sawtooth", 0.1); tone(120, 0.12, 0.2, "sawtooth", 0.1); },
+    undo()  { tone(400, 0, 0.07, "triangle"); tone(300, 0.07, 0.09, "triangle"); },
+    cancel(){ tone(330, 0, 0.07, "sine"); },
+    win()   { [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.14, 0.3, "triangle", 0.18)); }
+  };
+  muteBtn.addEventListener("click", () => {
+    soundOn = !soundOn;
+    muteBtn.textContent = "Sound: " + (soundOn ? "On" : "Off");
+    muteBtn.setAttribute("aria-pressed", String(!soundOn));
+    if (soundOn) sfx.lift();
+  });
+  // ------------------------------------------------------------
+
+  function init() {
+    clearTimeout(timer);
+    n = parseInt(countEl.value, 10);
+    pegs = [[], [], []];
+    for (let i = n; i >= 1; i--) pegs[0].push(i); // bottom -> top, bigger first
+    selected = null; moves = 0; history = []; solving = false;
+    minEl.textContent = (2 ** n) - 1;
+    setMsg("Pick a peg to lift its top disk.");
+    render();
+  }
+
+  function setMsg(text, win = false) {
+    msgEl.textContent = text;
+    msgEl.className = "msg" + (win ? " win" : "");
+  }
+
+  function render() {
+    boardEl.innerHTML = "";
+    pegs.forEach((peg, i) => {
+      const t = document.createElement("button");
+      t.className = "tower" + (selected === i ? " selected" : "");
+      t.setAttribute("aria-label",
+        `Peg ${i + 1}, ${peg.length} disk${peg.length === 1 ? "" : "s"}` +
+        (peg.length ? `, top disk size ${peg[peg.length - 1]}` : ""));
+      t.addEventListener("click", () => onPeg(i));
+      peg.forEach((size, idx) => {
+        const d = document.createElement("div");
+        d.className = "disk" + (selected === i && idx === peg.length - 1 ? " lifted" : "");
+        d.style.width = (22 + (size / n) * 74) + "%";
+        d.style.background = COLORS[(size - 1) % COLORS.length];
+        t.appendChild(d);
+      });
+      const l = document.createElement("span");
+      l.className = "label"; l.textContent = "Peg " + (i + 1);
+      t.appendChild(l);
+      t.dataset.index = i;
+      boardEl.appendChild(t);
+    });
+    movesEl.textContent = moves;
+    undoBtn.disabled = history.length === 0 || solving;
+    solveBtn.disabled = solving;
+  }
+
+  function isWon() { return pegs[2].length === n; }
+
+  function canMove(from, to) {
+    if (!pegs[from].length) return false;
+    if (!pegs[to].length) return true;
+    return pegs[from][pegs[from].length - 1] < pegs[to][pegs[to].length - 1];
+  }
+
+  function doMove(from, to) {
+    pegs[to].push(pegs[from].pop());
+    moves++;
+    history.push([from, to]);
+  }
+
+  function onPeg(i) {
+    if (solving || isWon()) return;
+    if (selected === null) {
+      if (!pegs[i].length) return flash(i, "That peg is empty.");
+      selected = i;
+      sfx.lift();
+      setMsg("Now pick where to put it.");
+    } else if (selected === i) {
+      selected = null;
+      sfx.cancel();
+      setMsg("Pick a peg to lift its top disk.");
+    } else if (canMove(selected, i)) {
+      doMove(selected, i);
+      selected = null;
+      sfx.drop();
+      if (isWon()) {
+        sfx.win();
+        const best = (2 ** n) - 1;
+        setMsg(moves === best
+          ? `Solved in ${moves} moves. That's the minimum!`
+          : `Solved in ${moves} moves. The minimum is ${best}.`, true);
+      } else setMsg("Pick a peg to lift its top disk.");
+    } else {
+      const from = selected;
+      selected = null;
+      render();
+      return flash(i, "A bigger disk can't go on a smaller one.");
+    }
+    render();
+  }
+
+  function flash(i, text) {
+    sfx.error();
+    setMsg(text);
+    render();
+    const el = boardEl.children[i];
+    el.classList.add("bad");
+    setTimeout(() => el.classList.remove("bad"), 350);
+  }
+
+  function undo() {
+    if (!history.length || solving) return;
+    const [from, to] = history.pop();
+    pegs[from].push(pegs[to].pop());
+    moves--;
+    selected = null;
+    sfx.undo();
+    setMsg("Move undone.");
+    render();
+  }
+
+  // Recursive solution: produces the list of [from, to] moves
+  function hanoi(k, from, to, via, out) {
+    if (k === 0) return;
+    hanoi(k - 1, from, via, to, out);
+    out.push([from, to]);
+    hanoi(k - 1, via, to, from, out);
+  }
+
+  function autoSolve() {
+    // Restart from the beginning so the solution is always valid
+    init();
+    solving = true;
+    const steps = [];
+    hanoi(n, 0, 2, 1, steps);
+    setMsg("Solving...");
+    render();
+    let i = 0;
+    const delay = Math.max(60, 600 / n);
+    (function next() {
+      if (i >= steps.length) {
+        solving = false;
+        sfx.win();
+        setMsg(`Solved in ${moves} moves (the minimum).`, true);
+        render();
+        return;
+      }
+      doMove(...steps[i++]);
+      sfx.drop();
+      render();
+      timer = setTimeout(next, delay);
+    })();
+  }
+
+  document.getElementById("reset").addEventListener("click", init);
+  undoBtn.addEventListener("click", undo);
+  solveBtn.addEventListener("click", autoSolve);
+  countEl.addEventListener("change", init);
+
+  // Keyboard shortcuts: 1, 2, 3 pick pegs; U undoes; R restarts
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "SELECT") return;
+    if (["1", "2", "3"].includes(e.key)) onPeg(+e.key - 1);
+    else if (e.key.toLowerCase() === "u") undo();
+    else if (e.key.toLowerCase() === "r") init();
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
